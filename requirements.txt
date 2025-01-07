@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+paddlepaddle
+python-dotenv
+openai
+setuptools
+fitz
+frontend
+PyMuPDF
