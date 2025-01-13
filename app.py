@@ -19,7 +19,7 @@ load_dotenv()
 
 OLLAMA_URL = "http://213.173.108.12:17413"  # Your Ollama API URL
 MODEL_NAME = "llama3.2"  # Base model name
-SYSTEM_PROMPT = """You are an advanced OCR extraction agent. Your task is to extract all identifiable key-value pairs from the provided text.
+SYSTEM_PROMPT_DEFAULT= """You are an advanced OCR extraction agent. Your task is to extract all identifiable key-value pairs from the provided text.
 
 1. Dynamically identify all fields — do not assume predefined fields.
 2. Return results in a strict JSON format where:
@@ -47,12 +47,57 @@ Rules:
 - Return ONLY the JSON object, with no additional text or formatting."""
 
 
-async def extract_with_ai(extracted_text: str) -> dict:
+
+SYSTEM_PROMPT_CAR = """Extract vehicle registration information into JSON format with exactly these fields:
+- Traffic_Plate_No
+- Place_of_Issue
+- TC_No
+- Owner_Name_English
+- Owner_Name_Arabic
+- Nationality
+- Expiry_Date
+- Registration_Date
+- Insurance_Expiry
+- Policy_No
+- Mortgaged_By
+- Origin
+- Vehicle_Type
+- Chassis_Number
+
+Rules:
+- Clean OCR artifacts (0 to O, l to 1)
+- Format dates as DD-MMM-YY
+- Include all fields even if empty
+- Return ONLY the JSON object, no additional text"""
+
+
+SYSTEM_PROMPT_DRIVING_LICENSE = """Extract driving license information into JSON format with exactly these fields:
+- License_No
+- Name_English
+- Name_Arabic
+- Nationality
+- Date_of_Birth
+- Issue_Date
+- Expiry_Date
+- License_Type
+- Place_of_Issue
+- Traffic_File_No
+- Blood_Group
+- Sponsor_Name
+
+Rules:
+- Clean OCR artifacts (0 to O, l to 1)
+- Format dates as DD-MMM-YY
+- Include all fields even if empty
+- Return ONLY the JSON object, no additional text"""
+
+
+async def extract_with_ai(extracted_text: str,system_prompt: str) -> dict:
     """Call the Ollama API with the extracted text."""
     ollama_request = {
         "model": MODEL_NAME,
         "prompt": extracted_text,
-        "system": SYSTEM_PROMPT,
+        "system": system_prompt,
         "stream": False
     }
     
@@ -84,7 +129,7 @@ async def extract_with_ai(extracted_text: str) -> dict:
             raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ocr")
+@app.post("/ocr/default")
 async def ocr_endpoint(file: UploadFile = File(...)):
     # Save the uploaded file
     os.makedirs('uploads', exist_ok=True)
@@ -120,7 +165,7 @@ async def ocr_endpoint(file: UploadFile = File(...)):
 
     # Use AI to process extracted text
     try:
-        ai_response = await extract_with_ai(extracted_text)
+        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_DEFAULT)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
 
@@ -130,6 +175,106 @@ async def ocr_endpoint(file: UploadFile = File(...)):
         "data": {
             "text": extracted_text,
             "gpt_data": ai_response
+        }
+    }
+
+
+@app.post("/ocr/car")
+async def ocr_endpoint(file: UploadFile = File(...)):
+    # Save the uploaded file
+    os.makedirs('uploads', exist_ok=True)
+    file_path = os.path.join('uploads', file.filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    extracted_text = []
+
+    if file.filename.lower().endswith('.pdf'):
+        # Process each page in the PDF
+        pdf_document = fitz.open(file_path)
+        for page_number in range(len(pdf_document)):
+            page = pdf_document.load_page(page_number)
+            pix = page.get_pixmap()
+            img_path = os.path.join('uploads', f"{file.filename}_page_{page_number}.png")
+            pix.save(img_path)
+
+            # Perform OCR on the image
+            result = ocr.ocr(img_path)
+            for line in result:
+                for word_info in line:
+                    extracted_text.append(word_info[1][0])
+    else:
+        # Perform OCR on the image file
+        result = ocr.ocr(file_path)
+        for line in result:
+            for word_info in line:
+                extracted_text.append(word_info[1][0])
+
+    # Combine the extracted text
+    extracted_text = " ".join(extracted_text)
+
+    # Use AI to process extracted text
+    try:
+        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_CAR)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+
+    # Combine the results
+    return {
+        "status": "success",
+        "data": {
+            "text": extracted_text,
+            "gpt_data": ai_response
+        }
+    }
+
+
+@app.post("/ocr/drivring")
+async def ocr_endpoint(file: UploadFile = File(...)):
+    # Save the uploaded file
+    os.makedirs('uploads', exist_ok=True)
+    file_path = os.path.join('uploads', file.filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    extracted_text = []
+
+    if file.filename.lower().endswith('.pdf'):
+        # Process each page in the PDF
+        pdf_document = fitz.open(file_path)
+        for page_number in range(len(pdf_document)):
+            page = pdf_document.load_page(page_number)
+            pix = page.get_pixmap()
+            img_path = os.path.join('uploads', f"{file.filename}_page_{page_number}.png")
+            pix.save(img_path)
+
+            # Perform OCR on the image
+            result = ocr.ocr(img_path)
+            for line in result:
+                for word_info in line:
+                    extracted_text.append(word_info[1][0])
+    else:
+        # Perform OCR on the image file
+        result = ocr.ocr(file_path)
+        for line in result:
+            for word_info in line:
+                extracted_text.append(word_info[1][0])
+
+    # Combine the extracted text
+    extracted_text = " ".join(extracted_text)
+
+    # Use AI to process extracted text
+    try:
+        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_DRIVING_LICENSE)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+
+    # Combine the results
+    return {
+        "status": "success",
+        "data": {
+            "text": extracted_text,
+            "ai_format_data": ai_response
         }
     }
 
