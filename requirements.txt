@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-paddlepaddle
+paddleocr
 python-dotenv
 openai
 setuptools
@@ -8,3 +8,4 @@ fitz
 frontend
 PyMuPDF
 pydantic
+python-multipart

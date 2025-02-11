@@ -6,6 +6,7 @@ pip install -r requirements.txt
 
 uvicorn app:app --reload
 
+uvicorn app:app --reload --port 8001
 
 //for install
-pip install paddlepaddle
+pip install paddleocr

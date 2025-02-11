@@ -1,288 +1,119 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from typing import List
 import fitz
 from paddleocr import PaddleOCR
+from fastapi.staticfiles import StaticFiles
 import os
-import httpx
 import uvicorn
 from dotenv import load_dotenv
 import json
-from pydantic import BaseModel
+import asyncio
+from fastapi.concurrency import run_in_threadpool
+from openai import OpenAI
+from models.prompts import (
+    SYSTEM_PROMPT_INTRO,
+    SYSTEM_PROMPT_VEHICLE_REGISTRATION,
+    SYSTEM_PROMPT_DEFAULT,
+    SYSTEM_PROMPT_CAR,
+    SYSTEM_PROMPT_DRIVING_LICENSE,
+    SYSTEM_PROMPT_EMIRATES_CARD,
+)
 
 app = FastAPI(title="OCR API")
 
-# Initialize the OCR model
-ocr = PaddleOCR(lang='ar')
+# Create two OCR instances:
+# One configured for Arabic and the other for English.
+ocr_ar = PaddleOCR(lang='ar', rec_char_type='ar', use_angle_cls=True, show_log=False)
+ocr_en = PaddleOCR(lang='en', rec_char_type='en', use_angle_cls=True, show_log=False)
 
 # Load environment variables
 load_dotenv()
+clientOpen = OpenAI()
+API_KEY = os.getenv("OPENAI_API_KEY")
+APY_KEY_CLOUDE = os.getenv("ANTHROPIC_API_KEY")
+if not API_KEY:
+    raise ValueError("Environment variable OPENAI_API_KEY is not set.")
 
-OLLAMA_URL = "http://213.173.108.12:17413"  # Your Ollama API URL
-MODEL_NAME = "llama3.2"  # Base model name
-SYSTEM_PROMPT_DEFAULT= """You are an advanced OCR extraction agent. Your task is to extract all identifiable key-value pairs from the provided text.
+# Ensure the static directory exists
+static_dir = "static"
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-1. Dynamically identify all fields — do not assume predefined fields.
-2. Return results in a strict JSON format where:
-   - The key is the field name (in English, if possible).
-   - The value includes both English and Arabic translations, if available.
-   - If only one language is present, include only that language.
-3. Avoid any extra text, summaries, or explanations. Only return a clean JSON object adhering strictly to these requirements.
-
-Output Format Example:
-{
-    "Field Name 1": {
-        "English": "Value in English",
-        "Arabic": "Value in Arabic (if available)"
-    },
-    "Field Name 2": {
-        "English": "Value in English",
-        "Arabic": "Value in Arabic (if available)"
-    }
-}
-
-Rules:
-- Clean OCR artifacts (e.g., replace '0' with 'O', and 'l' with '1', where applicable).
-- Format dates in the "DD-MMM-YY" format (e.g., 01-Jan-25).
-- Include all fields, even if some values are empty.
-- Return ONLY the JSON object, with no additional text or formatting."""
-
-
-
-SYSTEM_PROMPT_CAR = """Extract vehicle registration information into JSON format with exactly these fields:
-- Traffic_Plate_No
-- Place_of_Issue
-- TC_No
-- Owner_Name_English
-- Owner_Name_Arabic
-- Nationality
-- Expiry_Date
-- Registration_Date
-- Insurance_Expiry
-- Policy_No
-- Mortgaged_By
-- Origin
-- Vehicle_Type
-- Chassis_Number
-
-Rules:
-- Clean OCR artifacts (0 to O, l to 1)
-- Format dates as DD-MMM-YY
-- Include all fields even if empty
-- Return ONLY the JSON object, no additional text"""
-
-
-SYSTEM_PROMPT_DRIVING_LICENSE = """Extract driving license information into JSON format with exactly these fields:
-- License_No
-- Name_English
-- Name_Arabic
-- Nationality
-- Date_of_Birth
-- Issue_Date
-- Expiry_Date
-- License_Type
-- Place_of_Issue
-- Traffic_File_No
-- Blood_Group
-- Sponsor_Name
-
-Rules:
-- Clean OCR artifacts (0 to O, l to 1)
-- Format dates as DD-MMM-YY
-- Include all fields even if empty
-- Return ONLY the JSON object, no additional text"""
-
-
-async def extract_with_ai(extracted_text: str,system_prompt: str) -> dict:
-    """Call the Ollama API with the extracted text."""
-    ollama_request = {
-        "model": MODEL_NAME,
-        "prompt": extracted_text,
-        "system": system_prompt,
-        "stream": False
-    }
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json=ollama_request,
-                timeout=30.0
-            )
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Error from Ollama API")
-            
-            ollama_response = response.json()
-            response_text = ollama_response.get("response", "")
-            
-            # Parse JSON from the response
-            if "```json" in response_text:
-                json_text = response_text.split("```json")[1].split("```")[0]
-            elif "```" in response_text:
-                json_text = response_text.split("```")[1].split("```")[0]
-            else:
-                json_text = response_text.strip()
-            
-            return json.loads(json_text)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to parse JSON: {str(e)}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/ocr/default")
-async def ocr_endpoint(file: UploadFile = File(...)):
-    # Save the uploaded file
-    os.makedirs('uploads', exist_ok=True)
-    file_path = os.path.join('uploads', file.filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    extracted_text = []
-
-    if file.filename.lower().endswith('.pdf'):
-        # Process each page in the PDF
-        pdf_document = fitz.open(file_path)
-        for page_number in range(len(pdf_document)):
-            page = pdf_document.load_page(page_number)
-            pix = page.get_pixmap()
-            img_path = os.path.join('uploads', f"{file.filename}_page_{page_number}.png")
-            pix.save(img_path)
-
-            # Perform OCR on the image
-            result = ocr.ocr(img_path)
-            for line in result:
-                for word_info in line:
-                    extracted_text.append(word_info[1][0])
-    else:
-        # Perform OCR on the image file
-        result = ocr.ocr(file_path)
-        for line in result:
-            for word_info in line:
-                extracted_text.append(word_info[1][0])
-
-    # Combine the extracted text
-    extracted_text = " ".join(extracted_text)
-
-    # Use AI to process extracted text
+def extract_with_ai(text: str, system_prompt: str, sample: dict = None) -> dict:
     try:
-        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_DEFAULT)
+        sample_json = json.dumps(sample) if sample is not None else None
+        response = clientOpen.chat.completions.create(
+            model="ft:gpt-4o-mini-2024-07-18:vionex-technologies::AyH6jL2W",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.5,
+            prediction={"type": "content", "content": sample_json} if sample_json else None
+        )
+        return response.choices[0].message.content
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
-
-    # Combine the results
-    return {
-        "status": "success",
-        "data": {
-            "text": extracted_text,
-            "gpt_data": ai_response
-        }
-    }
-
 
 @app.post("/ocr/car")
 async def ocr_endpoint(file: UploadFile = File(...)):
-    # Save the uploaded file
-    os.makedirs('uploads', exist_ok=True)
-    file_path = os.path.join('uploads', file.filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
+    """
+    Process an uploaded file (PDF or image) by running it through both
+    the Arabic and English OCR engines concurrently, then merging the results.
+    """
+    if not file.filename.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg')):
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+    
+    file_data = await file.read()
     extracted_text = []
 
     if file.filename.lower().endswith('.pdf'):
-        # Process each page in the PDF
-        pdf_document = fitz.open(file_path)
-        for page_number in range(len(pdf_document)):
-            page = pdf_document.load_page(page_number)
-            pix = page.get_pixmap()
-            img_path = os.path.join('uploads', f"{file.filename}_page_{page_number}.png")
-            pix.save(img_path)
-
-            # Perform OCR on the image
-            result = ocr.ocr(img_path)
-            for line in result:
-                for word_info in line:
-                    extracted_text.append(word_info[1][0])
+        try:
+            with fitz.open(stream=file_data, filetype="pdf") as pdf_document:
+                tasks = []
+                for page in pdf_document:
+                    pix = page.get_pixmap()
+                    img_data = pix.tobytes("png")
+                    # Process each page with both OCR models concurrently.
+                    task_ar = run_in_threadpool(ocr_ar.ocr, img_data)
+                    task_en = run_in_threadpool(ocr_en.ocr, img_data)
+                    tasks.append(asyncio.gather(task_ar, task_en))
+                results = await asyncio.gather(*tasks)
+                for result_pair in results:
+                    result_ar, result_en = result_pair
+                    # Extract words from both OCR results.
+                    words_ar = [word_info[1][0] for line in result_ar for word_info in line]
+                    words_en = [word_info[1][0] for line in result_en for word_info in line]
+                    extracted_text.extend(words_ar)
+                    extracted_text.extend(words_en)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"PDF processing failed: {str(e)}")
     else:
-        # Perform OCR on the image file
-        result = ocr.ocr(file_path)
-        for line in result:
-            for word_info in line:
-                extracted_text.append(word_info[1][0])
+        try:
+            result_ar, result_en = await asyncio.gather(
+                run_in_threadpool(ocr_ar.ocr, file_data),
+                run_in_threadpool(ocr_en.ocr, file_data)
+            )
+            words_ar = [word_info[1][0] for line in result_ar for word_info in line]
+            words_en = [word_info[1][0] for line in result_en for word_info in line]
+            extracted_text.extend(words_ar)
+            extracted_text.extend(words_en)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
+    
+    combined_text = " ".join(extracted_text)
 
-    # Combine the extracted text
-    extracted_text = " ".join(extracted_text)
-
-    # Use AI to process extracted text
+    # Process the combined extracted text with the AI model.
     try:
-        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_CAR)
+        raw_ai_response = extract_with_ai(combined_text, SYSTEM_PROMPT_CAR)
+        ai_response = json.loads(raw_ai_response)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+    
+    return {"status": "success", "data": {"text": combined_text, "gpt_data": ai_response}}
 
-    # Combine the results
-    return {
-        "status": "success",
-        "data": {
-            "text": extracted_text,
-            "gpt_data": ai_response
-        }
-    }
-
-
-@app.post("/ocr/drivring")
-async def ocr_endpoint(file: UploadFile = File(...)):
-    # Save the uploaded file
-    os.makedirs('uploads', exist_ok=True)
-    file_path = os.path.join('uploads', file.filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    extracted_text = []
-
-    if file.filename.lower().endswith('.pdf'):
-        # Process each page in the PDF
-        pdf_document = fitz.open(file_path)
-        for page_number in range(len(pdf_document)):
-            page = pdf_document.load_page(page_number)
-            pix = page.get_pixmap()
-            img_path = os.path.join('uploads', f"{file.filename}_page_{page_number}.png")
-            pix.save(img_path)
-
-            # Perform OCR on the image
-            result = ocr.ocr(img_path)
-            for line in result:
-                for word_info in line:
-                    extracted_text.append(word_info[1][0])
-    else:
-        # Perform OCR on the image file
-        result = ocr.ocr(file_path)
-        for line in result:
-            for word_info in line:
-                extracted_text.append(word_info[1][0])
-
-    # Combine the extracted text
-    extracted_text = " ".join(extracted_text)
-
-    # Use AI to process extracted text
-    try:
-        ai_response = await extract_with_ai(extracted_text,SYSTEM_PROMPT_DRIVING_LICENSE)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
-
-    # Combine the results
-    return {
-        "status": "success",
-        "data": {
-            "text": extracted_text,
-            "ai_format_data": ai_response
-        }
-    }
-
-
-@app.get("/")
+@app.get("/", tags=["Health"])
 def read_root():
-    return {"message": "OCR Tool API"}
-
+    return {"message": "OCR Tool API is running"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
