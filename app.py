@@ -22,8 +22,8 @@ from models.prompts import SYSTEM_PROMPT_CAR
 app = FastAPI(title="OCR API")
 
 # Initialize OCR engines
-ocr_ar = PaddleOCR(lang='ar', rec_char_type='ar', use_angle_cls=True, show_log=False)
-ocr_en = PaddleOCR(lang='en', rec_char_type='en', use_angle_cls=True, show_log=False)
+ocr_ar = PaddleOCR(lang='ar', rec_char_type='ar', use_angle_cls=False, show_log=False)
+ocr_en = PaddleOCR(lang='en', rec_char_type='en', use_angle_cls=False, show_log=False)
 
 # Load environment variables
 load_dotenv()
