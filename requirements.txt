@@ -9,3 +9,4 @@ frontend
 PyMuPDF
 pydantic
 python-multipart
+groq
